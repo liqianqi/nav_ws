@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    # 本项目 Mid360 相对底盘的实车安装外参。
+    # FAST-LIO 使用它把内部 IMU 轨迹直接换算成 odom->base_link，
+    # 并把所有世界系点云转换到 odom。
+    frames:
+      odom_frame: odom
+      base_frame: base_link
+      lidar_frame: livox_frame
+      imu_frame: imu_link
+      base_to_lidar_xyz: [0.1435, -0.1437, 0.2752]
+      base_to_lidar_rpy: [-0.1143, -0.4519, 2.4036]
+
+      # robot_state_publisher 已从底盘 URDF 发布
+      # base_link->livox_frame->imu_link（以及轮子），避免重复静态 TF。
+      publish_sensor_tf: false

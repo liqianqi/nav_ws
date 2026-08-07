@@ -1,0 +1,15 @@
+# Livox MID360 驱动参数
+# 雷达 IP / 主机 IP 在 livox_ros_driver2/config/MID360_config.json 里配置，
+# 这里只管 ROS 侧的发布行为。
+livox_lidar_publisher:
+  ros__parameters:
+    # 0 = PointCloud2(PointXYZRTL)，Nav2 / pointcloud_to_laserscan 需要这个格式
+    # 1 = livox 自定义 CustomMsg，FAST-LIO 一类的 LIO 算法才用
+    xfer_format: 0
+    multi_topic: 0        # 0 = 多台雷达共用一个话题，1 = 每台一个话题
+    data_src: 0           # 0 = 实时雷达
+    publish_freq: 10.0    # Hz，可选 5.0 / 10.0 / 20.0 / 50.0
+    output_data_type: 0
+    frame_id: livox_frame
+    lvx_file_path: /home/ubuntu/livox_test.lvx
+    cmdline_input_bd_code: livox0000000001

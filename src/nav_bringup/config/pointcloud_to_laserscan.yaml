@@ -1,0 +1,13 @@
+pointcloud_to_laserscan:
+  ros__parameters:
+    target_frame: "base_link"   # 在车体系切片(直立坐标系,高度有物理意义)
+    transform_tolerance: 0.05
+    min_height: 0.10            # 切片下界(相对 base_link,避开地面噪声)
+    max_height: 1.2             # 切片上界
+    angle_min: -3.14159
+    angle_max: 3.14159
+    angle_increment: 0.0087     # ~0.5°
+    scan_time: 0.1
+    range_min: 0.3
+    range_max: 40.0
+    use_sim_time: false

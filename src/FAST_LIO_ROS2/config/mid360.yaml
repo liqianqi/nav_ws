@@ -1,0 +1,62 @@
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 3
+        max_iteration: 3
+        filter_size_surf: 0.5
+        filter_size_map: 0.5
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: "./test.pcd"
+
+        common:
+            lid_topic:  "/livox/lidar"
+            imu_topic:  "/livox/imu"
+            time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
+            time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
+                                        # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
+
+        preprocess:
+            lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 4 for any other pointcloud input
+            scan_line:  4
+            blind: 0.5
+            timestamp_unit: 3
+            scan_rate: 10
+
+        mapping:
+            acc_cov: 0.1
+            gyr_cov: 0.1
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree:    360.0
+            det_range:     100.0
+            extrinsic_est_en:  false     # Mid360 内参已知，固定后才能发布稳定的 lidar->imu TF
+            extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
+            extrinsic_R: [ 1., 0., 0.,
+                            0., 1., 0.,
+                            0., 0., 1.]
+
+        # ROS 对外标准坐标。独立使用 FAST-LIO 时默认 base_link 与雷达重合；
+        # 装到具体机器人时由项目自己的覆盖配置填写 base->lidar 安装外参。
+        frames:
+            odom_frame: odom
+            base_frame: base_link
+            lidar_frame: livox_frame
+            imu_frame: imu_link
+            base_to_lidar_xyz: [0.0, 0.0, 0.0]
+            base_to_lidar_rpy: [0.0, 0.0, 0.0]
+            publish_sensor_tf: true
+
+        publish:
+            path_en: true                # 建图时方便在 RViz 看轨迹
+            effect_map_en: false         # true: publish Effects
+            map_en: true                 # 建图时发布全局地图点云
+            scan_publish_en:  true       # false: close all the point cloud output
+            dense_publish_en: true       # 稠密扫描(建图/导航重定位都有用)
+            scan_imu_frame_pub_en: true  # 建图调试用 imu_link 系点云
+            publish_tf: true             # 发布 odom->base_link
+
+        pcd_save:
+            pcd_save_en: true
+            interval: -1                 # how many LiDAR frames saved in each pcd file; 
+                                        # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.

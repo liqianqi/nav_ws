@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<!--
+  导航用机器人模型：
+    base_link -> updownbase_urdf_asm (底盘本体 + 4个全向轮, 来自 chassis.urdf)
+    base_link -> livox_frame -> imu_link (雷达 TF 链)
+
+  雷达位姿从 POKE_V_0_3_1 CAD 网格中提取：
+    两台 Mid360 对角安装，轴线相对竖直方向外倾 25°（即顶面相对水平面 25°）：
+      前右: xyz=( 0.1435, -0.1437, 0.2752), 倾斜朝向 yaw=-45°
+      后左: xyz=(-0.1435,  0.1437, 0.2752), 倾斜朝向 yaw=135°
+    默认使用前右这台；xyz 是 Mid360 光学中心（点云原点，底面上方 23.6mm）。
+-->
+<robot name="nav_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- 底盘（base_link 为根，含 4 个全向轮和两个 mid360 的外观） -->
+  <xacro:include filename="chassis.urdf"/>
+
+  <!-- [调整] 雷达相对 base_link 的安装位姿（默认: 前右 Mid360, CAD 提取值） -->
+  <xacro:property name="lidar_x"     value="0.1435"/>
+  <xacro:property name="lidar_y"     value="-0.1437"/>
+  <xacro:property name="lidar_z"     value="0.2752"/>
+  <!-- 倾角: 原为水平仪实测 23° 纯俯仰(roll=0, pitch=-0.4014, yaw=2.3562)。
+       2026-08-07 实车点云标定: 用扫描地面平面拟合出残余倾斜(roll≈-6.3°,
+       pitch≈-2°),把修正旋转合成进外参得到下面的精确值。
+       Mid360 +X = Livox 标志面 = 插头(线缆)的对面。CAD 中插头朝车角外侧，
+       故 +X 指向车体中心方向(倾斜上坡方向)，对应 pitch 取负、yaw=135°。 -->
+  <xacro:property name="lidar_roll"  value="-0.1143"/>
+  <xacro:property name="lidar_pitch" value="-0.4519"/>
+  <xacro:property name="lidar_yaw"   value="2.4036"/>
+
+  <!-- MID360 点云的 frame_id，与 mid360.yaml 中的 frame_id 一致。
+       外观已包含在底盘网格中，这里只是坐标系 -->
+  <link name="livox_frame"/>
+
+  <joint name="base_link_to_livox" type="fixed">
+    <parent link="base_link"/>
+    <child link="livox_frame"/>
+    <origin xyz="${lidar_x} ${lidar_y} ${lidar_z}"
+            rpy="${lidar_roll} ${lidar_pitch} ${lidar_yaw}"/>
+  </joint>
+
+  <!-- MID360 内置 IMU，驱动发布的 /livox/imu 用这个 frame（Livox 官方内部外参） -->
+  <link name="imu_link"/>
+
+  <joint name="livox_to_imu" type="fixed">
+    <parent link="livox_frame"/>
+    <child link="imu_link"/>
+    <origin xyz="0.011 0.02329 -0.04412" rpy="0 0 0"/>
+  </joint>
+
+</robot>

@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<!--
+  仅供 controller_manager 使用的控制描述（不含外观模型，外观在 nav_bringup 里）。
+  关节名与 nav_bringup/urdf/chassis.urdf 一致（base_link 系下的实际方位）。
+  CAN ID 实测映射（2026-08-06 实车标定第二轮:
+  前后直行时前后排对顶较劲,试换后排后 w/s 整体反向 => 实为前排一对接反）:
+    1=右后  2=左后  3=左前  4=右前   (motor_type 2 = ROBSTRIDE_02)
+-->
+<robot name="omni_base" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- CAN 通道由 launch 传入（PC=can0, NX=can1，launch 会自动探测 UP 的口） -->
+  <xacro:arg name="can_channel" default="can0"/>
+  <xacro:property name="can_channel" value="$(arg can_channel)"/>
+  <xacro:property name="motor_type"  value="2"/>
+
+  <link name="base_link"/>
+
+  <ros2_control name="OmniBase" type="system">
+    <hardware>
+      <plugin>hardware/OmniHardwareInterface</plugin>
+    </hardware>
+
+    <xacro:macro name="wheel_joint" params="name can_id">
+      <joint name="${name}">
+        <param name="channel">${can_channel}</param>
+        <param name="can_id">${can_id}</param>
+        <param name="motor_type">${motor_type}</param>
+        <command_interface name="velocity"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:macro>
+
+    <xacro:wheel_joint name="wheel_front_left"  can_id="3"/>
+    <xacro:wheel_joint name="wheel_front_right" can_id="4"/>
+    <xacro:wheel_joint name="wheel_rear_left"   can_id="2"/>
+    <xacro:wheel_joint name="wheel_rear_right"  can_id="1"/>
+  </ros2_control>
+
+</robot>

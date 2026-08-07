@@ -1,0 +1,18 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 50  # Hz。每周期对每个电机发一次 CAN 速度指令并等应答
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    wheel_velocity_controller:
+      type: velocity_controllers/JointGroupVelocityController
+
+wheel_velocity_controller:
+  ros__parameters:
+    # 顺序必须与 omni_kinematics 输出一致: 左前 右前 左后 右后
+    joints:
+      - wheel_front_left
+      - wheel_front_right
+      - wheel_rear_left
+      - wheel_rear_right

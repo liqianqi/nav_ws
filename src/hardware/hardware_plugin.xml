@@ -1,0 +1,7 @@
+<library path="hardware">
+  <class name="hardware/OmniHardwareInterface"
+         type="hardware::OmniHardwareInterface"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>全向轮底盘 ROS2 Control 硬件接口（RobStride 电机, SocketCAN）</description>
+  </class>
+</library>
