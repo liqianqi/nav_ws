@@ -14,9 +14,9 @@ TF 链：`map ──(gicp重定位)──▶ odom ──(FAST-LIO)──▶ base
 ## 0. 前置准备
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/humble/setup.zsh
 colcon build --symlink-install
-source install/setup.bash
+source install/setup.zsh
 
 # 一次性安装系统级依赖 small_gicp（编译并安装到系统）
 bash third_party/install_deps.sh
