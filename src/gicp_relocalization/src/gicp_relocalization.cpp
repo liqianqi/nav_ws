@@ -21,6 +21,8 @@
 #include <limits>
 #include <vector>
 
+#include "pcl/filters/voxel_grid.h"
+
 namespace gicp_relocalization
 {
 
@@ -43,6 +45,27 @@ GicpRelocalizationNode::GicpRelocalizationNode(const rclcpp::NodeOptions & optio
   loadGlobalMap(prior_pcd_file_);
   global_search_ = std::make_unique<GlobalSearch2D>(*global_map_, global_search_config_);
 
+  // 发布先验地图到 /prior_map_cloud,latched(QoS TRANSIENT_LOCAL + RELIABLE),
+  // RViz 订阅后能用不同颜色和 /cloud_registered 对比配准情况。
+  // 下采样到 0.1m 降低数据量(281 万点 -> 几十万点),视觉对比足够
+  prior_map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "prior_map_cloud", rclcpp::QoS(1).transient_local().reliable());
+  {
+    pcl::PointCloud<pcl::PointXYZ>::Ptr viz_map(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::VoxelGrid<pcl::PointXYZ> voxel;
+    voxel.setInputCloud(global_map_);
+    voxel.setLeafSize(0.1f, 0.1f, 0.1f);
+    voxel.filter(*viz_map);
+    sensor_msgs::msg::PointCloud2 map_msg;
+    pcl::toROSMsg(*viz_map, map_msg);
+    map_msg.header.frame_id = map_frame_;
+    map_msg.header.stamp = this->now();
+    prior_map_pub_->publish(map_msg);
+    RCLCPP_INFO(this->get_logger(),
+      "Published prior map (%zu pts after 0.1m voxel) to /prior_map_cloud in '%s' frame",
+      viz_map->size(), map_frame_.c_str());
+  }
+
   target_ = small_gicp::voxelgrid_sampling_omp<
     pcl::PointCloud<pcl::PointXYZ>, pcl::PointCloud<pcl::PointCovariance>>(
     *global_map_, global_leaf_size_);
@@ -58,6 +81,10 @@ GicpRelocalizationNode::GicpRelocalizationNode(const rclcpp::NodeOptions & optio
     "initialpose", 10,
     std::bind(&GicpRelocalizationNode::initialPoseCallback, this, std::placeholders::_1));
 
+  // GICP 配准频率。
+  // 0.5 秒一次(2Hz):在跟踪精度和 CPU 负载之间平衡。
+  // 之前试过 2 秒(0.5Hz),但间隔太长导致 odom 漂移累积,GICP 初始猜测偏差过大,
+  // 配准完全失败(inliers=0.000)。0.5 秒间隔下 odom 漂移小,GICP 能稳定跟踪。
   register_timer_ = this->create_wall_timer(
     std::chrono::milliseconds(500),
     std::bind(&GicpRelocalizationNode::performRegistration, this));
@@ -117,6 +144,12 @@ void GicpRelocalizationNode::declareParameters()
   candidate_max_correction_yaw_ =
     this->declare_parameter<double>("candidate_max_correction_yaw_deg", 10.0) *
     M_PI / 180.0;
+  // 去重阈值:精配准后位姿距离/角度小于此值的候选视为同一解,合并后再判歧义。
+  // 默认 1.0m / 10° —— GICP 在同一真实位置附近的收敛抖动通常 <1m,合并掉避免假歧义
+  candidate_dedup_distance_ =
+    this->declare_parameter<double>("candidate_dedup_distance", 1.0);
+  candidate_dedup_yaw_deg_ =
+    this->declare_parameter<double>("candidate_dedup_yaw_deg", 10.0);
   tracking_min_inlier_ratio_ =
     this->declare_parameter<double>("tracking_min_inlier_ratio", 0.35);
   tracking_max_rmse_ = this->declare_parameter<double>("tracking_max_rmse", 0.30);
@@ -206,7 +239,7 @@ bool GicpRelocalizationNode::validateCandidates(
 
   for (size_t i = 0; i < candidates.size(); ++i) {
     const auto & candidate = candidates[i];
-    // 自动候选直接表示 T_map_odom；source 点云也在 odom 系。
+    // 自动候选直接表示 T_map_odom; source 点云也在 odom 系。
     Eigen::Isometry3d initial_guess = Eigen::Isometry3d::Identity();
     initial_guess.translation() << candidate.x, candidate.y, 0.0;
     initial_guess.linear() =
@@ -232,8 +265,11 @@ bool GicpRelocalizationNode::validateCandidates(
         std::sin(refined_yaw - initial_yaw), std::cos(refined_yaw - initial_yaw)));
     RCLCPP_INFO(
       this->get_logger(),
-      "Candidate %zu: inliers=%.3f rmse=%.3f score=%.3f correction=(%.3fm, %.2fdeg)",
-      i, inlier_ratio, rmse, score, correction_translation,
+      "Candidate %zu: pose=(%.3f, %.3f, %.2fdeg) inliers=%.3f rmse=%.3f score=%.3f "
+      "correction=(%.3fm, %.2fdeg)",
+      i, refined_pose.translation().x(), refined_pose.translation().y(),
+      refined_yaw * 180.0 / M_PI,
+      inlier_ratio, rmse, score, correction_translation,
       correction_yaw * 180.0 / M_PI);
     if (
       inlier_ratio >= candidate_min_inlier_ratio_ && rmse <= candidate_max_rmse_ &&
@@ -267,7 +303,8 @@ bool GicpRelocalizationNode::validateCandidates(
         std::atan2(kept.pose.linear()(1, 0), kept.pose.linear()(0, 0));
       const double yaw_distance =
         std::abs(std::atan2(std::sin(yaw - kept_yaw), std::cos(yaw - kept_yaw)));
-      if (distance < 0.5 && yaw_distance < 5.0 * M_PI / 180.0) {
+      if (distance < candidate_dedup_distance_ &&
+          yaw_distance < candidate_dedup_yaw_deg_ * M_PI / 180.0) {
         distinct = false;
         break;
       }
@@ -281,6 +318,23 @@ bool GicpRelocalizationNode::validateCandidates(
   if (distinct_results.size() > 1) {
     const auto & second = distinct_results[1];
     const double ratio = best.score / std::max(second.score, 1e-9);
+    // 打印所有 distinct 候选的坐标和两两距离,用于判断歧义是"近距离重复"还是"真歧义"
+    std::string distinct_summary;
+    for (size_t k = 0; k < distinct_results.size(); ++k) {
+      const double kx = distinct_results[k].pose.translation().x();
+      const double ky = distinct_results[k].pose.translation().y();
+      const double kyaw = std::atan2(
+        distinct_results[k].pose.linear()(1, 0), distinct_results[k].pose.linear()(0, 0)) * 180.0 / M_PI;
+      char buf[128];
+      snprintf(buf, sizeof(buf), "[%zu](%.2f,%.2f,%.0fdeg,s=%.3f) ", k, kx, ky, kyaw, distinct_results[k].score);
+      distinct_summary += buf;
+    }
+    RCLCPP_INFO(this->get_logger(), "Distinct candidates after dedup: %s", distinct_summary.c_str());
+    if (distinct_results.size() == 2) {
+      const double dx = best.pose.translation().x() - second.pose.translation().x();
+      const double dy = best.pose.translation().y() - second.pose.translation().y();
+      RCLCPP_INFO(this->get_logger(), "Best vs second distance: %.3f m", std::hypot(dx, dy));
+    }
     if (ratio > candidate_ambiguity_ratio_) {
       RCLCPP_WARN(
         this->get_logger(),
@@ -295,6 +349,16 @@ bool GicpRelocalizationNode::validateCandidates(
   reloc_state_ = RelocState::TRACKING;
   gicp_fail_count_ = 0;
   accumulated_cloud_->clear();
+  // 初始化智能跟踪的 odom 基准
+  try {
+    auto tf = tf_buffer_->lookupTransform(
+      odom_frame_, robot_base_frame_, tf2::TimePointZero);
+    last_track_odom_pos_ = tf2::transformToEigen(tf.transform).translation();
+    last_successful_track_time_ = this->now();
+    last_track_odom_valid_ = true;
+  } catch (tf2::TransformException &) {
+    last_track_odom_valid_ = false;
+  }
   const double accepted_yaw =
     std::atan2(best.pose.linear()(1, 0), best.pose.linear()(0, 0));
   RCLCPP_INFO(
@@ -336,6 +400,41 @@ void GicpRelocalizationNode::performRegistration()
     }
 
     case RelocState::TRACKING: {
+      // === 智能跟踪策略 ===
+      // 1. 检查自上次成功跟踪以来的 odom 位移/旋转
+      // 2. 位移 < 0.3m 且旋转 < 5° 且 < 10 秒 → 跳过本次配准(省 CPU)
+      // 3. 有明显位移 或 超过 10 秒 → 执行 GICP 配准
+      Eigen::Isometry3d current_odom_pose = Eigen::Isometry3d::Identity();
+      bool got_odom = false;
+      try {
+        auto tf = tf_buffer_->lookupTransform(
+          odom_frame_, robot_base_frame_, tf2::TimePointZero);
+        current_odom_pose = tf2::transformToEigen(tf.transform);
+        got_odom = true;
+      } catch (tf2::TransformException &) {
+        // odom TF 不可用,强制配准(用 GICP 结果兜底)
+      }
+
+      // 判断是否需要配准
+      bool need_align = true;
+      if (got_odom && last_track_odom_valid_) {
+        double dx = current_odom_pose.translation().x() - last_track_odom_pos_.x();
+        double dy = current_odom_pose.translation().y() - last_track_odom_pos_.y();
+        double trans_moved = std::hypot(dx, dy);
+        double time_since = last_successful_track_time_.nanoseconds() == 0 ? 999.0 :
+          (this->now() - last_successful_track_time_).seconds();
+        if (trans_moved < TRACK_MIN_TRANSLATION && time_since < TRACK_FORCE_INTERVAL_SEC) {
+          need_align = false;  // 没怎么动,跳过配准
+        }
+      }
+
+      if (!need_align) {
+        // 跳过配准,清空累积点云(下次从新累积)
+        accumulated_cloud_->clear();
+        return;
+      }
+
+      // 执行 GICP 配准
       Eigen::Isometry3d gicp_pose = Eigen::Isometry3d::Identity();
       double inlier_ratio = 0.0;
       double rmse = std::numeric_limits<double>::infinity();
@@ -359,10 +458,18 @@ void GicpRelocalizationNode::performRegistration()
         result_t_ = previous_result_t_ = gicp_pose;
         gicp_fail_count_ = 0;
         accumulated_cloud_->clear();
+        // 记录本次跟踪时的 odom 位姿,用于下次判断是否需要配准
+        if (got_odom) {
+          last_track_odom_pos_ = current_odom_pose.translation();
+          last_successful_track_time_ = this->now();
+          last_track_odom_valid_ = true;
+        }
         return;
       }
 
       ++gicp_fail_count_;
+      // 跟踪失败时清空累积点云,避免点云越来越大导致后续 GICP 更不稳定
+      accumulated_cloud_->clear();
       RCLCPP_WARN(
         this->get_logger(),
         "GICP tracking rejected: inliers=%.3f rmse=%.3f jump=(%.3fm, %.2fdeg) "

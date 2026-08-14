@@ -23,7 +23,7 @@ include_directories(include)
 
 # Hardware interface library
 add_library(${PROJECT_NAME} SHARED
-  src/motor_cfg.cpp
+  src/robstride_can_driver.cpp
   src/hardware.cpp
 )
 

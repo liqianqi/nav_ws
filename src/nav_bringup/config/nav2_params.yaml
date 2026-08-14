@@ -11,11 +11,12 @@ bt_navigator:
     robot_base_frame: base_link
     odom_topic: /odom
     default_bt_xml_filename: "navigate_to_pose_w_replanning_and_recovery.xml"
+    transform_tolerance: 1.0  # gicp 重定位期间 TF 可能短暂中断,加大容忍
 
 controller_server:
   ros__parameters:
     use_sim_time: False
-    controller_frequency: 20.0
+    controller_frequency: 20.0      # MPPI 要求 controller_period <= model_dt,20Hz=0.05s=model_dt
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001    # 全向车: y 向小速度同样有效
     min_theta_velocity_threshold: 0.001
@@ -36,35 +37,116 @@ controller_server:
       yaw_goal_tolerance: 0.17          # ~10°
 
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner"
-      debug_trajectory_details: False
-      transform_tolerance: 0.3          # map->odom 由重定位节点低频发布,放宽容差
-      # 全向底盘: x/y 双向速度
-      min_vel_x: -0.4
-      max_vel_x: 0.4
-      min_vel_y: -0.4
-      max_vel_y: 0.4
-      max_vel_theta: 1.0
-      min_speed_xy: 0.0
-      max_speed_xy: 0.4
-      min_speed_theta: 0.0
-      acc_lim_x: 1.5
-      acc_lim_y: 1.5
-      acc_lim_theta: 2.5
-      decel_lim_x: -1.5
-      decel_lim_y: -1.5
-      decel_lim_theta: -2.5
-      vx_samples: 12
-      vy_samples: 8                     # 全向车必须给 y 向采样
-      vtheta_samples: 12
-      sim_time: 1.5
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 10.0
-      PathAlign.scale: 32.0
-      GoalAlign.scale: 24.0
-      PathDist.scale: 32.0
-      GoalDist.scale: 24.0
-      RotateToGoal.scale: 32.0
+      # -----------------------------------------------------------------
+      # MPPI(Model Predictive Path Integral)局部规划器
+      # 替换 DWB:采样优化,多峰代价函数,能在窄通道/动态障碍里"钻缝"
+      # 全向轮用 motion_model: Omni
+      # -----------------------------------------------------------------
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 40                # 轨迹点数; ×model_dt=0.05 = 预测视野 2.0s(够用)
+      model_dt: 0.05                # 50ms/步
+      batch_size: 600               # NX 上 1000 太重(控制循环超时),600 是实时性甜点
+      iteration_count: 1            # 保持 1,增加 batch 比 iteration 更划算
+      vx_max: 0.4                   # 全向轮上限与 velocity_smoother 对齐
+      vx_min: -0.4
+      vy_max: 0.4                   # 全向:横移速度
+      wz_max: 1.0
+      vx_std: 0.2                   # 采样标准差,影响探索性
+      vy_std: 0.2
+      wz_std: 0.4
+      ax_max: 1.5                   # 与底盘/velocity_smoother 加速度对齐
+      ax_min: -1.5
+      ay_max: 1.5
+      ay_min: -1.5
+      az_max: 2.5
+      temperature: 0.3              # 越接近 0 越贪心(只用最优);0.3 兼顾平滑
+      gamma: 0.015                  # 默认值,平滑与能耗权衡,一般不动
+      motion_model: "Omni"
+      Omni:
+        plugin: "mppi::OmniMotionModel"
+      visualize: false              # 调参时改 true,看候选轨迹
+      retry_attempt_limit: 1
+      reset_period: 1.0             # Humble 必需
+      regenerate_noises: false      # 减少运行时线程抖动
+      sgf_order: 2                  # Savitzky-Golay 平滑,2 阶兼顾平滑与贴合窄通道
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      TrajectoryValidator:
+        plugin: "mppi::DefaultOptimalTrajectoryValidator"
+        collision_lookahead_time: 1.5
+        consider_footprint: false    # 圆盘模型,用中心点检查即可,更快
+
+      critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic", "GoalAngleCritic",
+                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "TwirlingCritic"]
+
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+
+      # 窄通道场景的关键 critic,几个参数要和通道尺寸匹配
+      ObstaclesCritic:
+        enabled: true
+        cost_power: 1
+        # 一般避障权重:让 MPPI 倾向走低代价区,但不至于不敢进通道
+        repulsion_weight: 1.5
+        # 近碰撞惩罚权重:在 collision_margin_distance 范围内叠加
+        critical_weight: 20.0
+        consider_footprint: false    # 圆盘用中心点检查
+        collision_cost: 100000.0     # 真碰撞代价,几乎禁止
+        # 关键:必须 < 通道半宽(0.33),否则 MPPI 会认为通道不可通行
+        # 留 0.18m 安全边,即机器人中心离墙 0.46m 起开始重惩罚
+        collision_margin_distance: 0.18
+        near_goal_distance: 0.5      # 接近目标时放宽避障,便于贴目标停车
+        # Humble 专用:必须与 costmap inflation 一致
+        inflation_radius: 0.33
+        cost_scaling_factor: 3.0
+
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.4   # 与预测视野(2.8m)协调
+
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.07   # 路径被障碍占超 7% 时让位给避障
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false     # Navfn 不带朝向
+
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0                          # 朝向路径方向偏好
+
+      # 全向轮不加 PreferForward(我们要允许横移/后退钻缝)
+      # TwirlingCritic 抑制无意义自转,但权重适中,保留横移能力
+      TwirlingCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0
 
 local_costmap:
   local_costmap:
@@ -83,6 +165,7 @@ local_costmap:
       footprint_clearing_enabled: true
       combination_method: 1
       always_send_full_costmap: True
+      transform_tolerance: 1.0  # gicp 重定位期间容忍 TF 短暂中断
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -101,8 +184,9 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
+        # 局部:窄通道场景,DWB 要在通道内贴边走,高代价区不能太厚
         cost_scaling_factor: 5.0
-        inflation_radius: 0.35
+        inflation_radius: 0.30
 
 global_costmap:
   global_costmap:
@@ -119,6 +203,7 @@ global_costmap:
       footprint_clearing_enabled: true
       combination_method: 1
       always_send_full_costmap: True
+      transform_tolerance: 1.0  # gicp 重定位期间容忍 TF 短暂中断
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -141,8 +226,10 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.35
+        # 全局:通道半宽 0.33,inflation 必须 <= 此值否则堵死通道;
+        # 通道外靠 cost_scaling_factor 较小形成平缓梯度,引导走中间
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.33
 
 map_server:
   ros__parameters:

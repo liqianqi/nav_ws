@@ -226,7 +226,7 @@ public:
       close(socket_fd);
   }
 
-  // 默认 0.1s 超时：电机掉线时不能让控制循环永久阻塞
+  // 默认 0.1s 超时：电机掉线时不能让控制循环永久阻塞。
   ReceiveResult receive(double timeout_sec = 0.1) {
     // 设置超时时间
     if (timeout_sec > 0) {

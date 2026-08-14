@@ -23,11 +23,18 @@ void RobStrideMotor::init_socket() {
     exit(1);
   }
 
+  // RobStride 应答帧(通信类型 2)ID 结构(见协议文档第33页):
+  //   bit28-24: 通信类型 0x02
+  //   bit23-22: 模式状态
+  //   bit21-16: 故障信息
+  //   bit15-8:  当前电机 CAN_ID   ← motor_id 在这里
+  //   bit7-0:   主机 CAN_ID
+  // 过滤器匹配 bit15-8 = motor_id,这样每个 socket 只收自己电机的应答
   struct can_filter rfilter[1];
   rfilter[0].can_id =
-      (motor_id << 8) | CAN_EFF_FLAG; // Bit8~Bit15 放电机ID，高位扩展帧标志
+      (motor_id << 8) | CAN_EFF_FLAG;  // bit8-15 放 motor_id
   rfilter[0].can_mask =
-      (0xFF << 8) | CAN_EFF_FLAG; // 只匹配 Bit8~Bit15 + 扩展帧标志
+      (0xFF << 8) | CAN_EFF_FLAG;  // 只匹配 bit8-15 + 扩展帧标志
 
   if (setsockopt(socket_fd, SOL_CAN_RAW, CAN_RAW_FILTER, &rfilter,
                  sizeof(rfilter)) < 0) {
@@ -163,9 +170,10 @@ void RobStrideMotor::Set_RobStrite_Motor_parameter(uint16_t Index, float Value,
 
   int n = write(socket_fd, &frame, sizeof(frame));
   if (n != sizeof(frame)) {
-    perror("set mode failed");
-  } else {
-    // std::cout << "[✓] Motor set-mode command sent." << std::endl;
+    // write 失败(CAN 接口异常或电机掉线),不要继续 receive 卡 0.1s,
+    // 否则 4 个电机 × 0.1s = 0.4s,远超 ros2_control 50Hz(20ms)周期,
+    // 会导致控制循环严重超时。直接返回,让 write() 的下一周期重试。
+    return;
   }
   receive_status_frame();
 }
@@ -281,21 +289,10 @@ RobStrideMotor::send_motion_command(float torque, float position_rad,
 
 std::tuple<float, float, float, float>
 RobStrideMotor::send_velocity_mode_command(float velocity_rad_s) {
-  if (drw.run_mode.data != 2 && pattern == 2) {
-    Disenable_Motor(0);
-    std::cout << "disable motor " << std::endl;
-    usleep(1000);
-    Set_RobStrite_Motor_parameter(0X7005, Speed_control_mode, Set_mode);
-    usleep(1000);
-    Get_RobStrite_Motor_parameter(0x7005);
-    usleep(1000);
-    enable_motor();
-    Set_RobStrite_Motor_parameter(0X7018, 27.0f, Set_parameter);
-    usleep(1000);
-    Set_RobStrite_Motor_parameter(0X7026, Motor_Set_All.set_acc, Set_parameter);
-    usleep(1000);
-  }
-  // 高频路径，不打印
+  // 速度模式 + 加速度/电流限制已在 on_activate 时一次性配置好,
+  // 这里只发速度指令(0x700A),不再在运动中做模式切换。
+  // 原来的条件切换(disable→set mode→enable→set params)每周期 7 次 CAN 通信,
+  // 且依赖 run_mode/pattern 状态,运动中极易出错,导致电机转速梯度分布或失能。
   Set_RobStrite_Motor_parameter(0X700A, velocity_rad_s, Set_parameter);
   return std::make_tuple(position_, velocity_, torque_, temperature_);
 }

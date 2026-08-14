@@ -63,6 +63,7 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pcd_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr prior_map_pub_;
   rclcpp::TimerBase::SharedPtr register_timer_;
   rclcpp::TimerBase::SharedPtr transform_timer_;
 
@@ -89,11 +90,16 @@ private:
   double candidate_ambiguity_ratio_;
   double candidate_max_correction_translation_;
   double candidate_max_correction_yaw_;
+  double candidate_dedup_distance_;
+  double candidate_dedup_yaw_deg_;
   double tracking_min_inlier_ratio_;
   double tracking_max_rmse_;
   double tracking_max_jump_translation_;
   double tracking_max_jump_yaw_;
   bool force_planar_;
+  // false 时禁用自动全局搜索,只在 WAIT_INIT 状态下等 RViz /initialpose。
+  // 用于地图/环境对不上时,避免 CPU 被搜索占满,改由人工给初始位姿
+  bool auto_global_search_ = true;
   GlobalSearchConfig global_search_config_;
 
   std::string map_frame_;
@@ -108,6 +114,16 @@ private:
 
   Eigen::Isometry3d result_t_;
   Eigen::Isometry3d previous_result_t_;
+
+  // 智能跟踪:记录上次成功跟踪时的 odom 位姿,用于判断是否需要重新配准
+  Eigen::Vector3d last_track_odom_pos_{0, 0, 0};  // 上次跟踪时 base_link 在 odom 系的位置
+  rclcpp::Time last_successful_track_time_;        // 上次成功跟踪的时间
+  bool last_track_odom_valid_ = false;             // 是否已初始化 last_track_odom_pos_
+
+  // 智能跟踪参数(在 performRegistration 里直接用)
+  static constexpr double TRACK_MIN_TRANSLATION = 0.3;   // 位移超过 30cm 才配准
+  static constexpr double TRACK_MIN_YAW_DEG = 5.0;       // 旋转超过 5° 才配准
+  static constexpr double TRACK_FORCE_INTERVAL_SEC = 10.0; // 最长 10 秒强制配准一次
 
   pcl::PointCloud<pcl::PointXYZ>::Ptr global_map_;
   pcl::PointCloud<pcl::PointXYZ>::Ptr accumulated_cloud_;
